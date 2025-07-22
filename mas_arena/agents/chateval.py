@@ -28,6 +28,7 @@ def create_llm(model_name: str) -> ChatOpenAI:
 class Agent:
     """Represents an LLM agent"""
 
+    agent_id: int
     name: str
     model_name: str
     system_prompt: str
@@ -165,6 +166,7 @@ class ChatEval(AgentSystem):
         debate_agents = []
         for i in range(self.num_agents):
             agent = Agent(
+                agent_id=i+1,
                 name=AGENT_NAMES[i],
                 model_name=self.model_name,
                 system_prompt=self._get_agent_prompt(i),
@@ -322,7 +324,7 @@ if __name__ == "__main__":
         problem = {
             "problem": "A positive integer, its square root is 452, find this positive integer."
         }
-        agent = ChatEval(name="chateval", config={"num_agents": 3, "num_rounds": 2})
+        agent = ChatEval(name="chateval", config={"num_agents": 3, "num_rounds": 1})
         result = await agent.run_agent(problem)
         print(result)
     
