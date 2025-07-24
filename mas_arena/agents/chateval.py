@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from dataclasses import dataclass
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -32,7 +32,7 @@ class Agent:
     name: str
     model_name: str
     system_prompt: str
-    chat_history: Optional[List[Dict[str, str]]] = None
+    chat_history: Optional[List[Dict[str, str]]] 
 
     def __post_init__(self):
         if self.chat_history is None:
@@ -43,12 +43,10 @@ class Agent:
         """Update chat history with human input and AI response"""
         # Handle case where response_content might be a list or other type
         content = response_content if isinstance(response_content, str) else str(response_content)
-        if self.chat_history is None:
-            self.chat_history = []
         self.chat_history.append({"role": "human", "human": context})
         self.chat_history.append({"role": "ai", "ai": content})
 
-    def _build_messages(self, context: str) -> List:
+    def _build_messages(self, context: str) -> List[Union[SystemMessage, HumanMessage, AIMessage]]:
         """Build message list for LLM input"""
         return [
             SystemMessage(content=self.system_prompt),
@@ -63,7 +61,7 @@ class Agent:
             HumanMessage(content=context),
         ]
 
-    async def generate_response(self, context: str) -> Any:
+    async def generate_response(self, context: str) -> Dict[str, Union[Any, str]]:
         """Generate agent response"""
         messages = self._build_messages(context)
 
@@ -167,6 +165,7 @@ class ChatEval(AgentSystem):
         for i in range(self.num_agents):
             agent = Agent(
                 agent_id=i+1,
+                chat_history=[],
                 name=AGENT_NAMES[i],
                 model_name=self.model_name,
                 system_prompt=self._get_agent_prompt(i),

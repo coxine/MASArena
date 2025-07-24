@@ -210,7 +210,7 @@ class ChatEval(AgentSystem):
         debate_agents = []
         for i in range(self.num_agents):
             agent = Agent(
-                agent_id=f"agent_{i+1}",
+                agent_id=i+1,
                 name=AGENT_NAMES[i],
                 model_name=self.model_name,
                 system_prompt=self._get_agent_prompt(i),
@@ -290,15 +290,18 @@ class ResultExtractor:
 
 ```python
 # mas_arena/agents/chateval.py
+from dataclasses import dataclass
+
 @dataclass
 class Agent:
     """Represents an LLM agent"""
-    agent_id: str
+
+    agent_id: int
     name: str
     model_name: str
     system_prompt: str
-    chat_history: Optional[List[Dict[str, str]]] = None
-    
+    chat_history: List[Dict[str, str]] = None
+
     def __post_init__(self):
         if self.chat_history is None:
             self.chat_history = []
