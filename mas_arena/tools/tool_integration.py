@@ -1,4 +1,5 @@
 import logging
+import inspect
 from typing import Dict, Any, Optional
 from mas_arena.tools.tool_selector import ToolSelector
 from mas_arena.tools.tool_manager import ToolManager
@@ -66,9 +67,14 @@ class ToolIntegrationWrapper(AgentSystem):
             problem_desc = problem.get("problem", "") if isinstance(problem, dict) else str(problem)
             return self.selector.select_tools(problem_desc)
     
-    def run_agent(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    async def run_agent(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Delegate to inner agent's run_agent method and log tool calls if present."""
         result = self.inner.run_agent(problem, **kwargs)
+        
+        # Handle coroutine objects (async methods)
+        if inspect.iscoroutine(result):
+            result = await result
+            
         # Check for tool call in the result (LangChain AIMessage convention)
         if isinstance(result, dict):
             # If result contains 'messages', check for tool_calls in each message
@@ -101,9 +107,13 @@ class ToolIntegrationWrapper(AgentSystem):
         orig_create_agents_meth = self.inner.__class__._create_agents.__get__(self.inner, self.inner.__class__)
         wrapper_self = self
         
-        def patched_create_agents(wrapped_self, problem_input, feedback=None):
+        async def patched_create_agents(wrapped_self, problem_input, feedback=None):
             # Call the original _create_agents with both arguments
             result_from_original_create_agents = orig_create_agents_meth(problem_input, feedback)
+            
+            # Handle coroutine objects (async methods)
+            if inspect.iscoroutine(result_from_original_create_agents):
+                result_from_original_create_agents = await result_from_original_create_agents
             
             workers_to_process_by_tiw = []
             if isinstance(result_from_original_create_agents, dict):
@@ -196,7 +206,7 @@ class ToolIntegrationWrapper(AgentSystem):
         orig_run = self.inner.run_agent
         wrapper_self = self
         
-        def patched_run(wrapped_self, problem, **kwargs):
+        async def patched_run(wrapped_self, problem, **kwargs):
             # Use the unified selection method
             tools = wrapper_self.select_tools_for_problem(problem)
             tool_objs = [t["tool_object"] for t in tools if "tool_object" in t]
@@ -218,21 +228,33 @@ class ToolIntegrationWrapper(AgentSystem):
                 except Exception as e:
                     print(f"[ToolIntegration] ERROR: Failed to bind tools to single-agent system '{wrapper_self.inner.name}'. Error: {e}")
             # else: No tools selected or llm not present/compatible.
-            return orig_run(problem, **kwargs)
+            result = orig_run(problem, **kwargs)
+            
+            # Handle coroutine objects (async methods)
+            if inspect.iscoroutine(result):
+                result = await result
+                
+            return result
         
         from types import MethodType
         self.inner.run_agent = MethodType(patched_run, self.inner)
         
         print(f"[ToolIntegration] Successfully patched {self.inner.name} for single-agent tool selection")
 
-    def set_metrics_registry(self, registry):
+    def set_metrics_registry(self, metrics_registry):
         """Set metrics registry on inner agent system."""
-        self.inner.set_metrics_registry(registry)
+        self.inner.set_metrics_registry(metrics_registry)
         return self
 
-    def evaluate(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    async def evaluate(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Delegate evaluation to inner agent system."""
-        return self.inner.evaluate(problem, **kwargs)
+        result = self.inner.evaluate(problem, **kwargs)
+        
+        # Handle coroutine objects (async methods)
+        if inspect.iscoroutine(result):
+            result = await result
+            
+        return result
     
     def __getattr__(self, name):
         """Delegate all other attribute access to inner agent system."""
