@@ -2,7 +2,7 @@
 from mas_arena.tools.tool_manager import ToolManager
 from mas_arena.tools.tool_selector import ToolSelector
 
-from . import examples
+# from . import examples
 
 from .browser_tool import BrowserTool
 from .document_analysis_tool import DocumentAnalysisTool

@@ -39,6 +39,7 @@ class ToolManager:
                 continue
 
             try:
+                logger.info(f"Instantiating tool provider: {name}")
                 provider_instance = tool_cls()
                 # Store the instance along with its registration name to fetch category later
                 self.tools.append({"provider": provider_instance, "name": name, "source": "local"})
