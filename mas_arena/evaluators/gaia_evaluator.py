@@ -7,6 +7,9 @@ import sys
 import re
 import string
 
+from mas_arena.evaluators.base_evaluator import BaseEvaluator
+from mas_arena.evaluators.registry import register_benchmark
+
 
 def _get_string_value(data: Any) -> str:
     """
