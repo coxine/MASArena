@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import datetime
+import os
 import sys
+import time
 from pathlib import Path
 import asyncio
 
@@ -93,18 +95,27 @@ def main():
     optimizer_group.add_argument(
         "--optimized_path",
         type=str,
-        default="example/aflow/humaneval/optimization",
+        default=None,
         help="Path to save the optimized agent flow graph.",
     )
     optimizer_group.add_argument("--validation_rounds", type=int, default=1, help="Number of validation rounds.")
     optimizer_group.add_argument("--eval_rounds", type=int, default=1, help="Number of evaluation rounds.")
     optimizer_group.add_argument("--max_rounds", type=int, default=3, help="Maximum number of optimization rounds.")
+    optimizer_group.add_argument("--train_size", type=int, default=40, help="Size of the training set for evaluation.")
+    optimizer_group.add_argument("--test_size", type=int, default=20, help="Size of the test set for evaluation.")
 
     # Parse arguments
     args = parser.parse_args()
 
     if args.run_optimizer:
         if args.run_optimizer == "aflow":
+            if not args.optimized_path:
+                args.optimized_path = f"example/aflow/{args.benchmark}/optimization"
+
+            if os.path.exists(args.optimized_path):
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                args.optimized_path = f"{args.optimized_path}_{timestamp}"
+
             from example.aflow.run_aflow_optimize import run_aflow_optimization
             print("\n" + "=" * 80)
             print(f"Running AFlow Optimizer ({datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
@@ -193,6 +204,7 @@ def main():
                 agent_system=args.agent_system,
                 agent_config=agent_config if agent_config else None,
                 verbose=args.verbose,
+                data_id=args.data_id,
                 concurrency=args.concurrency,
             ))
         else:
@@ -202,7 +214,8 @@ def main():
                 limit=args.limit,
                 agent_system=args.agent_system,
                 agent_config=agent_config if agent_config else None,
-                verbose=args.verbose
+                verbose=args.verbose,
+                data_id=args.data_id,
             )
         logger.info(f"Benchmark summary: {summary}")
         return 0
