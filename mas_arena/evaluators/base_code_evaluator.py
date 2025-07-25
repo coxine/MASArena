@@ -9,13 +9,16 @@ import re
 import time
 import logging
 import uuid
+import random
 from abc import abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Tuple, Union
+from typing import Dict, Any, Tuple, Union, List, Optional
 
 from langsmith.evaluation import RunEvaluator
 from langsmith.schemas import Run
+
 from mas_arena.evaluators.base_evaluator import BaseEvaluator
+from mas_arena.evaluators.utils.timeout import run_with_timeout, TimeoutError
 
 
 class BaseCodeEvaluator(BaseEvaluator):
@@ -38,6 +41,49 @@ class BaseCodeEvaluator(BaseEvaluator):
         )
         self.logger = logging.getLogger(__name__)
 
+    def _load_data(self):
+        self._train_data = []
+        self._dev_data = self._load_dateset_from_path(f"data/{self.name}_validate.jsonl")
+        self._test_data = self._load_dateset_from_path(f"data/{self.name}_test.jsonl")
+        self._test_cases = self._load_dateset_from_path(f"data/{self.name}_public_test.jsonl")
+
+    def _get_data(self, data: List[dict], indices: Optional[List[int]] = None, sample_size: Optional[int] = None,
+                  seed: Optional[int] = None) -> List[dict]:
+        if indices is None:
+            indices = list(range(len(data)))
+        if sample_size is not None:
+            if seed is not None:
+                random.seed(seed)
+            indices = random.sample(indices, k=min(sample_size, len(indices)))
+        return_data = [data[idx] for idx in indices]
+        return return_data
+
+    def get_train_data(self, indices: Optional[List[int]] = None, sample_size: Optional[int] = None,
+                       seed: Optional[int] = None) -> List[dict]:
+        if self._train_data is None:
+            print(f"Train data for benchmark {type(self).__name__} is not loaded or None. Return an empty list.")
+            return []
+        return self._get_data(data=self._train_data, indices=indices, sample_size=sample_size, seed=seed)
+
+    def get_dev_data(self, indices: Optional[List[int]] = None, sample_size: Optional[int] = None,
+                     seed: Optional[int] = None) -> List[dict]:
+        if self._dev_data is None:
+            print(f"Dev data for benchmark {type(self).__name__} is not loaded or None. Return an empty list.")
+            return []
+        return self._get_data(data=self._dev_data, indices=indices, sample_size=sample_size, seed=seed)
+
+    def get_test_data(self, indices: Optional[List[int]] = None, sample_size: Optional[int] = None,
+                      seed: Optional[int] = None) -> List[dict]:
+        if self._test_data is None:
+            print(f"Test data for evaluator {type(self).__name__} is not loaded or None. Return an empty list.")
+            return []
+        return self._get_data(data=self._test_data, indices=indices, sample_size=sample_size, seed=seed)
+
+    def extract_test_cases_with_entry_point(self, entry_point: str):
+        for case in self._test_cases:
+            if case["entry_point"] == entry_point:
+                return case["test"]
+        return None
     def extract_code(self, text: str) -> str:
         """
         Extract Python code from text in several fall-back steps:
@@ -126,6 +172,30 @@ class BaseCodeEvaluator(BaseEvaluator):
         """
         pass
 
+    def check_solution(self, code: str, test: str, entry_point: str, **kwargs) -> Tuple[bool, str]:
+        """
+        Check if the solution is correct.
+        Must be implemented by specific evaluators.
+        """
+        try:
+            # Create an isolated namespace
+            env: Dict[str, Any] = {}
+            # Inject the candidate implementation
+            exec(code, env)
+            candidate_fn = env[entry_point]
+            # Inject and obtain ``check()``
+            exec(test, env)
+            check_fn = env["check"]
+            # If ``check()`` raises, the except block will handle it
+            run_with_timeout(check_fn, (candidate_fn,), timeout=60)
+            return True, "All tests passed"
+        except TimeoutError as te:
+            msg = str(te)
+        except AssertionError as ae:
+            msg = f"Test failed: {ae}"
+        except Exception as exc:
+            msg = f"Execution error: {exc}"
+        return False, msg
     def verify_answer(self, prediction: str, reference: Union[str, Dict[str, Any]]) -> bool:
         """
         Implementation of BaseEvaluator's verify_answer for code tasks.

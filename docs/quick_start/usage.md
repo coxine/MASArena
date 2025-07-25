@@ -55,7 +55,16 @@ To run AFlow to optimize an agent for the `humaneval` benchmark, provide `aflow`
 ./run_benchmark.sh humaneval single_agent 10 "" "" aflow
 ```
 
+You can also specify the training and test set sizes for the optimizer. Note that when using the `aflow` optimizer, the number of problems is determined by `train_size` and `test_size`, and the `limit` argument is ignored for data selection.
 
+**Example with custom training and test sizes:**
+
+```bash
+# Run AFlow with a training set of 30 and a test set of 15.
+# The "" arguments are placeholders for mcp_config and concurrency.
+# The limit argument (10) is ignored in this case.
+./run_benchmark.sh humaneval single_agent 10 "" "" aflow 30 15
+```
 
 ## Command-Line Arguments
 
@@ -90,6 +99,8 @@ These arguments are used when running an optimizer like AFlow via `--run-optimiz
 | `--validation_rounds`| int | 1 | Number of validation rounds per optimization cycle. |
 | `--eval_rounds` | int | 1 | Number of evaluation rounds per optimization cycle. |
 | `--max_rounds` | int | 3 | Maximum number of optimization rounds. |
+| `--train_size` | int | 40 | Size of the training set for evaluation. |
+| `--test_size` | int | 20 | Size of the test set for evaluation. |
 
 ## Example Output
 

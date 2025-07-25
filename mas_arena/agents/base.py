@@ -5,6 +5,7 @@ This module provides the base classes and interfaces for agent systems.
 """
 
 import abc
+import logging
 from typing import Dict, Any, Optional, Type, Callable
 import uuid
 import os
@@ -17,7 +18,7 @@ from openai.types.completion_usage import CompletionUsage
 import aiofiles
 
 from mas_arena.utils.llm_parser import LLMOutputParser
-
+logger = logging.getLogger(__name__)
 
 class AgentSystem(abc.ABC):
     """Base class for all agent systems in the benchmark framework
@@ -45,7 +46,7 @@ class AgentSystem(abc.ABC):
         self.config = config or {}
         self.evaluator_name = self.config.get("evaluator", None)
         if self.evaluator_name is None:
-            print("Evaluator name is not set in the configuration.")
+            logger.info("Evaluator name is not set in the configuration. Defaulting to None.")
         
         self.metrics_registry = None
         self.evaluator = None

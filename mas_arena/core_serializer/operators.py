@@ -14,8 +14,8 @@ from mas_arena.core_serializer.component import SerializableComponent
 from mas_arena.utils.data_utils import test_case_2_test_function
 from mas_arena.core_serializer.operator_prompts import *
 from mas_arena.evaluators.base_evaluator import BaseEvaluator
-from mas_arena.evaluators.humaneval_evaluator import HumanEvalEvaluator
 from mas_arena.evaluators.utils import sanitize
+from mas_arena.evaluators.base_code_evaluator import BaseCodeEvaluator
 
 class OperatorOutput(LLMOutputParser):
 
@@ -71,7 +71,7 @@ class Custom(Operator):
 
     async def __call__(self, input: str, instruction: str) -> dict:
         prompt = instruction + input
-        response = await self.agent.run_agent(problem={"problem": prompt}, parser=self.prompt, parse_mode="str")
+        response = await self.agent.run_agent(problem={"problem": prompt}, parser=self.outputs_format, parse_mode="str")
         output: Optional[LLMOutputParser] = response.get("final_answer")
         if not output:
             return {}
@@ -165,9 +165,7 @@ class ScEnsemble(Operator):
         prompt = self.prompt.format(problem=problem, solutions=solution_text)
         response = await self.agent.run_agent(problem={"problem": prompt}, parser=self.outputs_format, parse_mode="xml")
         output: Optional[LLMOutputParser] = response.get("final_answer")
-        if not output:
-            return {}
-        return output.get_structured_data()
+        return self._process_response(output, answer_mapping, solutions)
 
 class CustomCodeGenerate(Operator):
 
@@ -218,9 +216,6 @@ class ReflectionTestOp(OperatorOutput):
                                          description="Corrective solution for code execution errors or test case failures")
 
 
-TEST_SUPPORTED_EVALUATORS = [HumanEvalEvaluator]
-
-
 class Test(Operator):
 
     def __init__(self, agent: AgentSystem, **kwargs):
@@ -231,10 +226,7 @@ class Test(Operator):
         super().__init__(name=name, description=description, interface=interface, agent=agent, outputs_format=TestOutput,
                          **kwargs)
 
-    # async def __call__(self, *args, **kwargs):
-    #     return await self.async_execute(*args, **kwargs)
-
-    async def __call__(self, problem, solution, entry_point, evaluator: BaseEvaluator, test_loop: int = 3):
+    async def __call__(self, problem, solution, entry_point, evaluator: BaseCodeEvaluator, test_loop: int = 3):
         """
         "Test": {
         "description": "Test the solution with test cases, if the solution is correct, return 'no error', if the solution is incorrect, return reflect on the soluion and the error information",
@@ -242,81 +234,31 @@ class Test(Operator):
         }
         """
         for _ in range(test_loop):
-            result = self.exec_code(solution, entry_point, evaluator)
-            if result == "no error":
+            passed, msg = evaluator.check_solution(solution, evaluator.extract_test_cases_with_entry_point(entry_point), entry_point)
+            if passed:
                 return {"result": True, "solution": solution}
-            elif "exec_fail_case" in result:
-                result = result["exec_fail_case"]
-                prompt = REFLECTION_ON_PUBLIC_TEST_PROMPT.format(
-                    problem=problem,
-                    solution=solution,
-                    exec_pass=f"executed unsuccessfully, error: \n {result}",
-                    test_fail="executed unsucessfully",
-                )
-                response = await self.agent.run_agent(problem={"problem": prompt}, parser=ReflectionTestOp, parse_mode="json")
-                output: Optional[LLMOutputParser] = response.get("final_answer")
-                solution = sanitize(
-                    output.get_structured_data().get("reflection_and_solution", output.content),
-                    entrypoint=entry_point
-                )
             else:
                 prompt = REFLECTION_ON_PUBLIC_TEST_PROMPT.format(
                     problem=problem,
                     solution=solution,
                     exec_pass="executed successfully",
-                    test_fail=result,
+                    test_fail=msg,
                 )
-                response = await self.agent.run_agent(problem={"problem": prompt}, parser=ReflectionTestOp, parse_mode="json")
+                response = await self.agent.run_agent(problem={"problem": prompt}, parser=ReflectionTestOp,
+                                                       parse_mode="json")
                 output: Optional[LLMOutputParser] = response.get("final_answer")
                 solution = sanitize(
                     output.get_structured_data().get("reflection_and_solution", output.content),
                     entrypoint=entry_point
                 )
 
-        result = self.exec_code(solution, entry_point, evaluator)
-
-        if result == "no error":
+        passed, msg = evaluator.check_solution(solution, evaluator.extract_test_cases_with_entry_point(entry_point),
+                                               entry_point)
+        if passed:
             return {"result": True, "solution": solution}
         else:
             return {"result": False, "solution": solution}
 
-
-    def exec_code(self, solution: str, entry_point: str, evaluator: BaseEvaluator):
-
-        if any(isinstance(evaluator, evaluator_type) for evaluator_type in TEST_SUPPORTED_EVALUATORS):
-            test_cases = evaluator.extract_test_cases_with_entry_point(entry_point)
-        else:
-            supported_evaluators = [typ.__name__ for typ in TEST_SUPPORTED_EVALUATORS]
-            raise ValueError(
-                f"Evaluator {type(evaluator)} is not supported! Available benchmarks: {supported_evaluators} and their subclasses")
-
-        fail_cases = []
-        for test_case in test_cases:
-            test_code = test_case_2_test_function(solution, test_case, entry_point)
-            try:
-                exec(test_code, globals())
-            except AssertionError as e:
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                tb_str = traceback.format_exception(exc_type, exc_value, exc_traceback)
-                # with open("tester.txt", "a") as f:
-                #     f.write("test_error of " + entry_point + "\n")
-                error_infomation = {
-                    "test_fail_case": {
-                        "test_case": test_case,
-                        "error_type": "AssertionError",
-                        "error_message": str(e),
-                        "traceback": tb_str,
-                    }
-                }
-                fail_cases.append(error_infomation)
-            except Exception as e:
-                # with open("tester.txt", "a") as f:
-                #     f.write(entry_point + " " + str(e) + "\n")
-                return {"exec_fail_case": str(e)}
-        if fail_cases != []:
-            return fail_cases
-        else:
-            return "no error"
 
 def run_code(code):
     try:
@@ -416,3 +358,9 @@ class Programmer(Operator):
                     f"Code: {code}\n\nStatus: {status}, {output}"
                 )
         return {"code": code, "output": output}
+
+class LLmOptimizeOutput(LLMOutputParser):
+
+    modification: str = Field(default="", description="modification")
+    graph: str = Field(default="", description="graph")
+    prompt: str = Field(default="", description="prompt")
