@@ -7,18 +7,6 @@ import sys
 import re
 import string
 
-from mas_arena.evaluators.base_evaluator import BaseEvaluator
-from mas_arena.evaluators.registry import register_benchmark
-
-try:
-    from sentence_transformers import SentenceTransformer
-    from mas_arena.utils.text_similarity_utils import are_strings_semantically_similar
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-    SentenceTransformer = None
-    are_strings_semantically_similar = None
-
 
 def _get_string_value(data: Any) -> str:
     """
@@ -246,30 +234,6 @@ class GaiaEvaluator(BaseEvaluator):
         self.use_semantic_similarity: bool = config.get('use_semantic_similarity', False)
         self.similarity_threshold: float = config.get('semantic_similarity_threshold', 0.85)
         self.similarity_model_name: str = config.get('semantic_similarity_model_name', 'all-MiniLM-L6-v2')
-        self.similarity_model: Optional[SentenceTransformer] = None
-
-        if self.use_semantic_similarity:
-            if SENTENCE_TRANSFORMERS_AVAILABLE and are_strings_semantically_similar is not None:
-                try:
-                    print(f"GaiaEvaluator: Loading semantic similarity model '{self.similarity_model_name}'...")
-                    self.similarity_model = SentenceTransformer(self.similarity_model_name)
-                    print("GaiaEvaluator: Semantic similarity model loaded successfully.")
-                except Exception as e:
-                    print(
-                        f"GaiaEvaluator Error: Failed to load semantic similarity model '{self.similarity_model_name}': {e}",
-                        file=sys.stderr)
-                    print("GaiaEvaluator: Falling back to exact match only.", file=sys.stderr)
-                    self.use_semantic_similarity = False
-            else:
-                print(
-                    "GaiaEvaluator Warning: 'use_semantic_similarity' is True, "
-                    "but 'sentence-transformers' library is not installed or text_similarity_utils.py is missing.",
-                    file=sys.stderr)
-                print(
-                    "GaiaEvaluator: Please install it ('pip install sentence-transformers') to use semantic similarity. "
-                    "Falling back to exact match.",
-                    file=sys.stderr)
-                self.use_semantic_similarity = False
 
     def evaluate(self, problem: Dict[str, Any], run_result: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """
@@ -324,7 +288,7 @@ class GaiaEvaluator(BaseEvaluator):
         # Priority 5: Final Answer: ... or Answer: ...
         if not answer_found_by_marker:
             answer_marker_match = re.search(
-                r"(?:(?:the\s+)?(?:final\s+)?answer\s*(?:is)?|thus,\s*(?:the\s+)?(?:final\s+)?answer\s*(?:in\s+the\s+requested\s+format\s*)?(?:is)?):\s*([^\n\r.!?]+)",
+                r"(?:(?:the\s+)?(?:final\s+)?answer\s*(?:is)?:?|thus,\s*(?:the\s+)?(?:final\s+)?answer\s*(?:in\s+the\s+requested\s+format\s*)?(?:is)?:?)\s*([^\n\r.!?]+)",
                 agent_full_output_str,
                 re.IGNORECASE
             )
@@ -366,19 +330,6 @@ class GaiaEvaluator(BaseEvaluator):
         if extracted_prediction_str:
             is_correct = _question_scorer(extracted_prediction_str, ground_truth_str)
             evaluation_method = "question_scorer"
-
-        # Fallback to semantic similarity if enabled
-        if not is_correct and self.use_semantic_similarity and self.similarity_model and are_strings_semantically_similar:
-            if not _is_primarily_numerical(ground_truth_str):
-                print("GaiaEvaluator: Exact match failed, trying semantic similarity as fallback.", file=sys.stderr)
-                is_correct = are_strings_semantically_similar(
-                    str_a=extracted_prediction_str,
-                    str_b=ground_truth_str,
-                    model=self.similarity_model,
-                    threshold=self.similarity_threshold
-                )
-                if is_correct:
-                    evaluation_method = "semantic_similarity_fallback"
 
         # Log detailed reasoning
         normalized_prediction_for_log = _normalize_str(extracted_prediction_str)
