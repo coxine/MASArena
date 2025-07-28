@@ -19,6 +19,7 @@ class DatasetType(Enum):
     HUMANEVAL = auto()
     MATH = auto()
     CODE = auto()  # Generic code generation format
+    GAIA = auto()  # Placeholder for GAIA benchmark
 
 
 @dataclass
@@ -154,6 +155,18 @@ Begin now. Remember: output only the compliant answer.
 """,
         description="Format prompt for math problems",
         dataset_type=DatasetType.MATH
+    ),
+    "gaia": FormatPrompt(
+        name="gaia",
+        prompt=f"""You are an all-capable AI assistant, aimed at solving any task presented by the user. You have various tools at your disposal that you can call upon to efficiently complete complex requests. Whether it's programming, information retrieval, file processing, or web browsing, you can handle it all.
+Please note that the task may be complex. Do not attempt to solve it all at once. You should break the task down and use different tools step by step to solve it. After using each tool, clearly explain the execution results and suggest the next steps.
+Please utilize appropriate tools for the task, analyze the results obtained from these tools, and provide your reasoning. Always use available tools such as browser, calcutor, etc. to verify correctness rather than relying on your internal knowledge.
+If you believe the problem has been solved, please output the `final answer`. The `final answer` should be given in <answer></answer> format, while your other thought process should be output in <think></think> tags.
+Your `final answer` should be a number OR as few words as possible OR a comma separated list of numbers and/or strings. If you are asked for a number, don't use comma to write your number neither use units such as $ or percent sign unless specified otherwise. If you are asked for a string, don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise. If you are asked for a comma separated list, apply the above rules depending of whether the element to be put in the list is a number or a string.
+...
+""",
+        description="Format prompt for GAIA benchmark",
+        dataset_type=DatasetType.GAIA
     )
 }
 

@@ -737,7 +737,6 @@ def create_agent_system(name: str, config: Dict[str, Any] = None) -> Optional[Ag
     if config and (config.get("use_tools") or config.get("use_mcp_tools")):
         try:
             from mas_arena.tools.tool_integration import ToolIntegrationWrapper
-            # Extract MCP server config and mock flag
             mcp_servers = config.get("mcp_servers", {})
             mock_mode = config.get("mock_mcp", False)
 
