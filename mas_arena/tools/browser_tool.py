@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List
 import sys
 import importlib
+import asyncio
 
 from langchain.tools import StructuredTool
 
@@ -64,47 +65,54 @@ class Browser:
         self.record_trace = kwargs.get("enable_recording", False)
         self.sleep_after_init = kwargs.get("sleep_after_init", False)
 
-        self.init()
+        # Initialize async resources
+        self.context_manager = None
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
 
-    def init(self) -> None:
-        from playwright.sync_api import sync_playwright
+    async def init(self) -> None:
+        from playwright.async_api import async_playwright
 
         if self.initialized:
             return
 
-        self.context_manager = sync_playwright()
-        self.playwright = self.context_manager.start()
-        self.browser = self._create_browser()
-        self.context = self._create_browser_context()
+        self.context_manager = async_playwright()
+        self.playwright = await self.context_manager.start()
+        self.browser = await self._create_browser()
+        self.context = await self._create_browser_context()
 
         if self.record_trace:
-            self.context.tracing.start(screenshots=True, snapshots=True)
+            await self.context.tracing.start(screenshots=True, snapshots=True)
 
-        self.page = self.context.new_page()
+        self.page = await self.context.new_page()
         self.initialized = True
 
-    def _create_browser(self):
+    async def _create_browser(self):
         browse_name = "chromium"
         browse = getattr(self.playwright, browse_name)
         headless = True
         slow_mo = 0
         disable_security_args = ['--disable-web-security', '--disable-site-isolation-trials', '--disable-features=IsolateOrigins,site-per-process']
         args = ['--no-sandbox', '--disable-crash-reporter', '--disable-blink-features=AutomationControlled', '--disable-infobars', '--disable-background-timer-throttling', '--disable-popup-blocking', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-window-activation', '--disable-focus-on-load', '--no-first-run', '--no-default-browser-check', '--no-startup-window', '--window-position=0,0', '--window-size=1280,720'] + disable_security_args
-        browser = browse.launch(
+        browser = await browse.launch(
             headless=headless,
             slow_mo=slow_mo,
             args=args,
         )
         return browser
 
-    def _create_browser_context(self):
-        from playwright.sync_api import ViewportSize
+    async def _create_browser_context(self):
+        from playwright.async_api import ViewportSize
 
-        browser = self.browser
+        if not self.browser:
+            raise RuntimeError("Browser not initialized")
+            
         viewport_size = ViewportSize(width=1280, height=720)
         disable_security = True
 
-        context = browser.new_context(viewport=viewport_size,
+        context = await self.browser.new_context(viewport=viewport_size,
                                       no_viewport=False,
                                       java_script_enabled=True,
                                       bypass_csp=disable_security,
@@ -112,20 +120,24 @@ class Browser:
                                       device_scale_factor=1)
         return context
 
-    def navigate(self, url: str) -> str:
+    async def navigate(self, url: str) -> str:
         """Navigate to a URL."""
+        if not self.page:
+            return "Browser not initialized"
         try:
-            self.page.goto(url)
+            await self.page.goto(url)
             return f"Navigated to {url}"
         except Exception as e:
             return f"Failed to navigate to {url}: {e}"
 
-    def get_page_content(self, clean=True) -> str:
+    async def get_page_content(self, clean=True) -> str:
         """
         Get the text content of the current page.
         Args:
             clean: Whether to run a cleaning script to remove irrelevant content.
         """
+        if not self.page:
+            return "Browser not initialized"
         try:
             if clean:
                 # A simple script to remove common clutter like nav, footer, scripts, styles
@@ -134,25 +146,29 @@ class Browser:
                     doc.querySelectorAll('nav, footer, script, style, aside, [role="navigation"], [role="banner"], [role="contentinfo"]').forEach(el => el.remove());
                     return doc.body.innerText;
                 }"""
-                return self.page.evaluate(js_script)
+                return await self.page.evaluate(js_script)
             else:
-                return self.page.inner_text('body')
+                return await self.page.inner_text('body')
         except Exception as e:
             return f"Failed to get page content: {e}"
 
     def get_current_url(self) -> str:
         """Get the current URL."""
+        if not self.page:
+            return "Browser not initialized"
         return self.page.url
 
-    def screenshot(self, full_page: bool = False) -> str:
+    async def screenshot(self, full_page: bool = False) -> str:
         """Returns a base64 encoded screenshot of the current page."""
+        if not self.page:
+            return "Browser not initialized"
         try:
-            self.page.bring_to_front()
-            self.page.wait_for_load_state(timeout=2000)
+            await self.page.bring_to_front()
+            await self.page.wait_for_load_state(timeout=2000)
         except:
             pass
 
-        screenshot = self.page.screenshot(
+        screenshot = await self.page.screenshot(
             full_page=full_page,
             animations='disabled',
             timeout=600000
@@ -160,32 +176,99 @@ class Browser:
         screenshot_base64 = base64.b64encode(screenshot).decode('utf-8')
         return screenshot_base64
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if not self.initialized:
             return
-        if self.record_trace:
-            self.save_trace("trace.zip")
+        if self.record_trace and self.context:
+            await self.save_trace("trace.zip")
 
-        self.page.close()
-        self.context.close()
-        self.browser.close()
+        if self.page:
+            await self.page.close()
+        if self.context:
+            await self.context.close()
+        if self.browser:
+            await self.browser.close()
         if hasattr(self, 'context_manager') and self.context_manager:
-            self.context_manager.stop()
+            await self.context_manager.__aexit__(None, None, None)
         self.initialized = False
 
-    def save_trace(self, trace_path: str | Path) -> None:
-        self.context.tracing.stop(path=trace_path)
+    async def save_trace(self, trace_path: str | Path) -> None:
+        if self.context and hasattr(self.context, 'tracing'):
+            await self.context.tracing.stop(path=trace_path)
+
+
+def run_async(async_func):
+    """运行异步函数的同步包装器"""
+    def wrapper(*args, **kwargs):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 没有运行中的事件循环，创建一个新的
+            return asyncio.run(async_func(*args, **kwargs))
+        else:
+            # 已经在事件循环中，使用 run_in_executor
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, async_func(*args, **kwargs))
+                return future.result()
+    return wrapper
 
 
 @ToolFactory.register(name=BROWSER, desc="A tool for browsing the web.")
 class BrowserTool:
     def __init__(self):
         self.browser = None
+        self._initialized = False
         try:
             self.browser = Browser()
         except Exception as e:
             print(f"Error: tool browser load failed - {e}")
             raise
+
+    def _ensure_initialized(self):
+        """确保浏览器已初始化"""
+        if not self._initialized and self.browser:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 没有运行中的事件循环，创建一个新的
+                asyncio.run(self.browser.init())
+            else:
+                # 已经在事件循环中，使用 run_in_executor
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, self.browser.init())
+                    future.result()
+            self._initialized = True
+
+    def navigate_sync(self, url: str) -> str:
+        self._ensure_initialized()
+        if not self.browser:
+            return "Browser not available"
+        return run_async(self.browser.navigate)(url)
+
+    def get_page_content_sync(self, clean=True) -> str:
+        self._ensure_initialized()
+        if not self.browser:
+            return "Browser not available"
+        return run_async(self.browser.get_page_content)(clean)
+
+    def get_current_url_sync(self) -> str:
+        self._ensure_initialized()
+        if not self.browser:
+            return "Browser not available"
+        return self.browser.get_current_url()
+
+    def screenshot_sync(self, full_page: bool = False) -> str:
+        self._ensure_initialized()
+        if not self.browser:
+            return "Browser not available"
+        return run_async(self.browser.screenshot)(full_page)
+
+    def close_browser_sync(self) -> None:
+        if self._initialized and self.browser:
+            run_async(self.browser.close)()
+            self._initialized = False
 
     def get_tools(self) -> List[StructuredTool]:
         if not self.browser:
@@ -193,32 +276,35 @@ class BrowserTool:
             
         return [
             StructuredTool.from_function(
-                func=self.browser.navigate,
+                func=self.navigate_sync,
                 name="navigate_to_url",
                 description="Navigate to a specific URL."
             ),
             StructuredTool.from_function(
-                func=self.browser.get_page_content,
+                func=self.get_page_content_sync,
                 name="get_page_content",
                 description="Get the text content of the current web page, optionally cleaning it."
             ),
             StructuredTool.from_function(
-                func=self.browser.get_current_url,
+                func=self.get_current_url_sync,
                 name="get_current_url",
                 description="Get the current URL of the browser."
             ),
             StructuredTool.from_function(
-                func=self.browser.screenshot,
+                func=self.screenshot_sync,
                 name="take_screenshot",
                 description="Take a screenshot of the current page."
             ),
             StructuredTool.from_function(
-                func=self.browser.close,
+                func=self.close_browser_sync,
                 name="close_browser",
                 description="Close the browser."
             )
         ]
 
     def __del__(self):
-        if self.browser:
-            self.browser.close() 
+        if self.browser and self._initialized:
+            try:
+                self.close_browser_sync()
+            except:
+                pass 
