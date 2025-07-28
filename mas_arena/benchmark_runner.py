@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Simple Benchmark Runner Interface
+Benchmark Runner
 
-This module provides a simplified interface for running benchmarks on multi-agent systems.
+This module provides functionality for running benchmarks on agent systems.
 """
 
 import os
 import json
 import random
-import subprocess
-import sys
 import shutil
-import tempfile
 from pathlib import Path
 from datetime import datetime
 import asyncio
 from tqdm.asyncio import tqdm
 from openai.types.completion_usage import CompletionUsage
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from rich import print as rprint
 
 from mas_arena.metrics import (
@@ -126,7 +123,7 @@ class BenchmarkRunner:
         agent.set_metrics_registry(self.metrics_registry)
 
         try:
-            with open(data_path, "r") as f:
+            with open(data_path, "r", encoding="utf-8") as f:
                 problems = [json.loads(line) for line in f]
         except FileNotFoundError:
             raise FileNotFoundError(f"Data file not found: {data_path}")
@@ -397,9 +394,10 @@ class BenchmarkRunner:
             concurrency=1  # Run sequentially
         ))
 
-    async def arun(self, benchmark_name="math", data_path=None, limit=None, agent_system="single_agent", agent_config=None, verbose=True, data_id=None,concurrency=10):
-        agent, problems, benchmark_config, output_file = self._prepare_benchmark(
-            benchmark_name, data_path, limit, agent_system, agent_config, verbose, data_id
+    async def arun(self, benchmark_name="math", data_path=None, limit=None, agent_system="single_agent", agent_config=None, verbose=True, concurrency=10):
+        # Prepare benchmark; we only need problems and config here
+        _, problems, benchmark_config, output_file = self._prepare_benchmark(
+            benchmark_name, data_path, limit, agent_system, agent_config, verbose
         )
 
         if verbose:
@@ -413,12 +411,12 @@ class BenchmarkRunner:
 
         async def process_with_semaphore(i, p):
             async with semaphore:
-                return await self._process_one_problem(i, p, agent, benchmark_config, verbose)
+                # Create a fresh agent instance per problem to isolate state
+                new_agent = create_agent_system(agent_system, self.agent_config)
+                new_agent.set_metrics_registry(self.metrics_registry)
+                return await self._process_one_problem(i, p, new_agent, benchmark_config, verbose)
 
-        tasks = [
-            process_with_semaphore(i, p)
-            for i, p in enumerate(problems)
-        ]
+        tasks = [process_with_semaphore(i, p) for i, p in enumerate(problems)]
         
         all_results = await tqdm.gather(*tasks, desc="Processing Problems")
 
