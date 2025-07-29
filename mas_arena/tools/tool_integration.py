@@ -195,7 +195,6 @@ class ToolIntegrationWrapper(AgentSystem):
                     tool_objs_for_binding = [t.get("tool_object") for t in worker_tools_for_this_agent if t.get("tool_object")]
                     worker_name = getattr(worker_obj, "name", f"worker_{i}")
                     
-                    print(f"[ToolIntegration] Worker '{worker_name}' to receive {len(tool_objs_for_binding)} tools: {(', '.join([t.get('name') for t in worker_tools_for_this_agent])) if worker_tools_for_this_agent else 'None'}")
                     setattr(worker_obj, "tools", worker_tools_for_this_agent) 
                     
                     if not hasattr(worker_obj, 'llm'):
@@ -263,7 +262,6 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
             original_prompt = getattr(worker_obj, 'system_prompt', '')
             enhanced_prompt = original_prompt + tool_instructions
             setattr(worker_obj, 'system_prompt', enhanced_prompt)
-            print(f"[ToolIntegration] Enhanced system prompt for worker '{getattr(worker_obj, 'name', 'unknown')}' with {len(worker_tools)} tool descriptions.")
         except Exception as e:
             print(f"[ToolIntegration] WARNING: Failed to inject tool instructions into worker: {e}")
     
