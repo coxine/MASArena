@@ -9,7 +9,7 @@ and then aggregating their results.
 import time
 import uuid
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import asyncio
 
 from langchain_openai import ChatOpenAI
@@ -24,7 +24,7 @@ load_dotenv()
 class SwarmAgent:
     """Individual agent in the swarm"""
 
-    def __init__(self, agent_id: str, model_name: str = None, system_prompt: str = None):
+    def __init__(self, agent_id: str, model_name: Optional[str] = None, system_prompt: Optional[str] = None):
         """
         Initialize a swarm agent.
 
@@ -89,7 +89,7 @@ Agent ID: {self.agent_id}
 class Aggregator:
     """Aggregates results from swarm agents to produce a final solution"""
 
-    def __init__(self, model_name: str = None, format_prompt: str = None):
+    def __init__(self, model_name: Optional[str] = None, format_prompt: Optional[str] = None):
         """
         Initialize the aggregator.
 
@@ -161,9 +161,9 @@ class SwarmSystem(AgentSystem):
     with results aggregated to produce a final solution.
     """
 
-    def __init__(self, name: str = "swarm", config: Dict[str, Any] = None):
+    def __init__(self, name: str = "swarm", config: Optional[Dict[str, Any]] = None):
         """Initialize the Swarm Agent System"""
-        super().__init__(name, config)
+        super().__init__(name, config or {})
         self.config = config or {}
         self.num_agents = self.config.get("num_agents", 3)
         self.model_name = self.config.get("model_name") or os.getenv("MODEL_NAME", "gpt-4o-mini")
@@ -171,7 +171,7 @@ class SwarmSystem(AgentSystem):
         
      
 
-    def _create_agents(self, problem_input: Dict[str, Any], feedback: Dict[str, Any] = None) -> Dict[str, List]:
+    def _create_agents(self, problem_input: Dict[str, Any], feedback: Optional[Dict[str, Any]] = None) -> Dict[str, List]:
         """Create the swarm agents"""
         # This method will be patched by ToolIntegrationWrapper if this system is wrapped.
         # The wrapper expects a dictionary: {"workers": [worker1, worker2, ...]}
@@ -187,7 +187,17 @@ class SwarmSystem(AgentSystem):
         ]
         
         # Also create the aggregator here if it's to be managed for tools
-        aggregator = Aggregator(model_name=self.model_name, format_prompt=self.format_prompt)
+        # Get format_prompt string (it's a method in the base class)
+        try:
+            format_prompt_str = self.format_prompt if hasattr(self, 'format_prompt') else ""
+            if callable(format_prompt_str):
+                format_prompt_str = format_prompt_str()
+            if not isinstance(format_prompt_str, str):
+                format_prompt_str = ""
+        except Exception:
+            format_prompt_str = ""
+        
+        aggregator = Aggregator(model_name=self.model_name, format_prompt=format_prompt_str)
         
         return {
             "workers": swarm_agents + [aggregator]
