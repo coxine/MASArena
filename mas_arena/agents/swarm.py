@@ -132,22 +132,108 @@ Make sure your final answer is clearly formatted and precise.
         messages = [
             {
                 "role": "system",
-                "content": "You are an expert aggregator that analyzes multiple solutions and determines the most accurate one.",
+                "content": "You are an expert aggregator that analyzes multiple solutions and determines the most accurate one. Focus on providing a clear, direct answer **without using external tools**.",
             },
             {"role": "user", "content": prompt},
         ]
 
-        start_time = time.time()
-        response = await self.llm.ainvoke(messages)
-        end_time = time.time()
+        try:
+            start_time = time.time()
+            print(f"[Aggregator] Invoking LLM...")
+            
+            # Handle potential tool calls in aggregator response
+            from langchain_core.messages import SystemMessage, HumanMessage
+            conversation_messages = [
+                SystemMessage(content=messages[0]["content"]),
+                HumanMessage(content=messages[1]["content"])
+            ]
+            response = await self.llm.ainvoke(conversation_messages)
+            
+            # Check if LLM made tool calls
+            has_tool_calls = (
+                (hasattr(response, 'tool_calls') and getattr(response, 'tool_calls', None)) or
+                (hasattr(response, 'additional_kwargs') and 
+                 getattr(response, 'additional_kwargs', {}).get('tool_calls'))
+            )
+            
+            if has_tool_calls:
+                print(f"[Aggregator] LLM made tool calls, but aggregator should provide direct analysis. Providing tool responses and requesting direct response...")
+                
+                # Add the AI message with tool calls to conversation
+                conversation_messages.append(response)
+                
+                # Provide responses for each tool call
+                from langchain_core.messages import ToolMessage
+                if hasattr(response, 'tool_calls') and getattr(response, 'tool_calls', None):
+                    for tool_call in getattr(response, 'tool_calls', []):
+                        tool_call_id = tool_call.get('id', 'unknown_id')
+                        # Provide a generic response indicating tools are not needed for aggregation
+                        tool_response = ToolMessage(
+                            content="Tools are not needed for aggregating solutions. Please provide your analysis directly based on the given solutions.",
+                            tool_call_id=tool_call_id
+                        )
+                        conversation_messages.append(tool_response)
+                
+                # Request a direct answer without tools
+                from langchain_core.messages import HumanMessage
+                follow_up_message = HumanMessage(content="Please provide your analysis and final answer directly without using any tools. Focus on synthesizing the provided solutions.")
+                conversation_messages.append(follow_up_message)
+                
+                # Get final response
+                response = await self.llm.ainvoke(conversation_messages)
+            
+            end_time = time.time()
+            
+            print(f"[Aggregator] LLM call completed in {(end_time - start_time) * 1000:.2f}ms")
+            print(f"[Aggregator] Response type: {type(response)}")
+            
+            # Debug response content
+            if hasattr(response, 'content'):
+                content_length = len(response.content) if response.content else 0
+                print(f"[Aggregator] Response content length: {content_length}")
+                if response.content:
+                    print(f"[Aggregator] Response preview: {str(response.content)[:200]}...")
+                else:
+                    print(f"[Aggregator] Response content is None or empty")
+            else:
+                print(f"[Aggregator] Response has no 'content' attribute")
+                print(f"[Aggregator] Response attributes: {dir(response)}")
+
+            # Debug response metadata if available
+            if hasattr(response, 'response_metadata') and response.response_metadata:
+                print(f"[Aggregator] Response metadata: {response.response_metadata}")
+                
+        except Exception as e:
+            print(f"[Aggregator] Error during LLM call: {type(e).__name__}: {str(e)}")
+            import traceback
+            print(f"[Aggregator] Full traceback: {traceback.format_exc()}")
+            return {
+                "final_solution": f"Error during aggregation: {str(e)}",
+                "message": None,
+                "latency_ms": 0,
+            }
 
         ai_message = response
         ai_message.id = f"aggregator_{uuid.uuid4()}"
         ai_message.name = self.name
 
+        # Enhanced empty content check
+        content = response.content if hasattr(response, 'content') else None
+        if content is None:
+            print(f"[Aggregator] Error: LLM returned None content")
+            print(f"[Aggregator] Full response object: {response}")
+        elif isinstance(content, str) and content.strip() == "":
+            print(f"[Aggregator] Error: LLM returned empty string content")
+            print(f"[Aggregator] Response length: {len(content)}")
+            print(f"[Aggregator] Response repr: {repr(content)}")
+        elif isinstance(content, (list, dict)):
+            print(f"[Aggregator] Warning: LLM returned non-string content: {type(content)}")
+            content = str(content)  # Convert to string for consistency
+        else:
+            print(f"[Aggregator] Successfully aggregated solution: {len(str(content))} characters")
 
         return {
-            "final_solution": response.content,
+            "final_solution": content,
             "message": ai_message,
             "latency_ms": (end_time - start_time) * 1000,
         }
