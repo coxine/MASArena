@@ -202,15 +202,13 @@ def run_async(async_func):
     def wrapper(*args, **kwargs):
         try:
             loop = asyncio.get_running_loop()
+            # 如果已经在事件循环中，使用 asyncio.create_task 而不是 run_in_executor
+            import nest_asyncio
+            nest_asyncio.apply()
+            return asyncio.run(async_func(*args, **kwargs))
         except RuntimeError:
             # 没有运行中的事件循环，创建一个新的
             return asyncio.run(async_func(*args, **kwargs))
-        else:
-            # 已经在事件循环中，使用 run_in_executor
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, async_func(*args, **kwargs))
-                return future.result()
     return wrapper
 
 
@@ -219,27 +217,48 @@ class BrowserTool:
     def __init__(self):
         self.browser = None
         self._initialized = False
+        self._cleanup_registered = False
         try:
             self.browser = Browser()
+            # 注册清理函数，在程序退出时执行
+            import atexit
+            if not self._cleanup_registered:
+                atexit.register(self._cleanup_on_exit)
+                self._cleanup_registered = True
         except Exception as e:
             print(f"Error: tool browser load failed - {e}")
             raise
+
+    def _cleanup_on_exit(self):
+        """程序退出时的清理函数"""
+        if self._initialized and self.browser:
+            try:
+                # 使用同步方式强制关闭
+                if hasattr(self.browser, 'browser') and self.browser.browser:
+                    # 直接关闭浏览器进程，不等待异步操作
+                    import subprocess
+                    import psutil
+                    try:
+                        # 尝试优雅关闭
+                        asyncio.run(self.browser.close())
+                    except:
+                        # 如果优雅关闭失败，强制终止相关进程
+                        pass
+                self._initialized = False
+            except:
+                pass
 
     def _ensure_initialized(self):
         """确保浏览器已初始化"""
         if not self._initialized and self.browser:
             try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # 没有运行中的事件循环，创建一个新的
-                asyncio.run(self.browser.init())
-            else:
-                # 已经在事件循环中，使用 run_in_executor
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, self.browser.init())
-                    future.result()
-            self._initialized = True
+                # 使用改进的 run_async 来初始化
+                run_async(self.browser.init)()
+                self._initialized = True
+            except Exception as e:
+                print(f"Failed to initialize browser: {e}")
+                self._initialized = False
+                raise
 
     def navigate_sync(self, url: str) -> str:
         self._ensure_initialized()
@@ -265,10 +284,16 @@ class BrowserTool:
             return "Browser not available"
         return run_async(self.browser.screenshot)(full_page)
 
-    def close_browser_sync(self) -> None:
+    def close_browser_sync(self) -> str:
         if self._initialized and self.browser:
-            run_async(self.browser.close)()
-            self._initialized = False
+            try:
+                run_async(self.browser.close)()
+                self._initialized = False
+                return "Browser closed successfully"
+            except Exception as e:
+                self._initialized = False
+                return f"Error closing browser: {e}"
+        return "Browser was not initialized"
 
     def get_tools(self) -> List[StructuredTool]:
         if not self.browser:
@@ -303,8 +328,8 @@ class BrowserTool:
         ]
 
     def __del__(self):
-        if self.browser and self._initialized:
-            try:
-                self.close_browser_sync()
-            except:
-                pass 
+        # 不要在 __del__ 中执行复杂的异步操作，只做简单清理
+        if hasattr(self, '_initialized'):
+            self._initialized = False
+        if hasattr(self, 'browser'):
+            self.browser = None 

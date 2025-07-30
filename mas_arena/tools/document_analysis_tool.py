@@ -41,6 +41,7 @@ class DocumentAnalysis:
             if keyframes:
                 result["keyframes"] = keyframes
             if error:
+                print(f"Error during document analysis: {error}")
                 result["error"] = error
             
             return json.dumps(result, ensure_ascii=False)

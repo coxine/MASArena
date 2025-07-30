@@ -1,6 +1,8 @@
 import logging
 import time
 import inspect
+import types
+import asyncio
 from typing import Dict, Any, Optional
 from mas_arena.tools.tool_selector import ToolSelector
 from mas_arena.tools.tool_manager import ToolManager
@@ -128,8 +130,7 @@ class ToolIntegrationWrapper(AgentSystem):
                 result_from_original_create_agents = orig_create_agents_meth(problem_input, feedback)
                 return wrapper_self._process_create_agents_result(result_from_original_create_agents, problem_input)
         
-        from types import MethodType
-        self.inner._create_agents = MethodType(patched_create_agents, self.inner)
+        self.inner._create_agents = types.MethodType(patched_create_agents, self.inner)
         
         print(f"[ToolIntegration] Successfully patched {self.inner.name} for multi-agent tool distribution (now supports direct list, dict{{'workers': [...]}}, or dict{{name: worker_obj}} return from _create_agents)")
     
@@ -195,7 +196,6 @@ class ToolIntegrationWrapper(AgentSystem):
                     tool_objs_for_binding = [t.get("tool_object") for t in worker_tools_for_this_agent if t.get("tool_object")]
                     worker_name = getattr(worker_obj, "name", f"worker_{i}")
                     
-                    print(f"[ToolIntegration] Worker '{worker_name}' to receive {len(tool_objs_for_binding)} tools: {(', '.join([t.get('name') for t in worker_tools_for_this_agent])) if worker_tools_for_this_agent else 'None'}")
                     setattr(worker_obj, "tools", worker_tools_for_this_agent) 
                     
                     if not hasattr(worker_obj, 'llm'):
@@ -263,10 +263,56 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
             original_prompt = getattr(worker_obj, 'system_prompt', '')
             enhanced_prompt = original_prompt + tool_instructions
             setattr(worker_obj, 'system_prompt', enhanced_prompt)
-            print(f"[ToolIntegration] Enhanced system prompt for worker '{getattr(worker_obj, 'name', 'unknown')}' with {len(worker_tools)} tool descriptions.")
         except Exception as e:
             print(f"[ToolIntegration] WARNING: Failed to inject tool instructions into worker: {e}")
     
+    async def _execute_tool_call(self, worker_obj, tool_name: str, tool_args: dict):
+        """
+        Execute a tool call for a worker with timeout protection.
+        
+        Args:
+            worker_obj: The worker agent object
+            tool_name: Name of the tool to execute
+            tool_args: Arguments for the tool
+            
+        Returns:
+            Tool execution result
+        """
+        try:
+            # Get the worker's tools
+            worker_tools = getattr(worker_obj, 'tools', [])
+            
+            # Find the matching tool
+            for tool_info in worker_tools:
+                if tool_info.get('name') == tool_name:
+                    tool_object = tool_info.get('tool_object')
+                    if tool_object and hasattr(tool_object, 'invoke'):
+                        # Execute the tool with timeout protection
+                        try:
+                            if hasattr(tool_object, 'ainvoke'):
+                                # Async tool with timeout
+                                result = await asyncio.wait_for(
+                                    tool_object.ainvoke(tool_args), 
+                                    timeout=30.0  # 30 seconds timeout
+                                )
+                            else:
+                                # Sync tool with timeout
+                                result = await asyncio.wait_for(
+                                    asyncio.to_thread(tool_object.invoke, tool_args),
+                                    timeout=30.0  # 30 seconds timeout
+                                )
+                            return result
+                        except asyncio.TimeoutError:
+                            return f"Tool '{tool_name}' execution timed out after 30 seconds"
+                        except Exception as tool_exec_error:
+                            return f"Tool '{tool_name}' execution failed: {str(tool_exec_error)}"
+            
+            # Tool not found
+            return f"Tool '{tool_name}' not found in worker's available tools"
+            
+        except Exception as e:
+            return f"Error executing tool '{tool_name}': {str(e)}"
+
     def _patch_worker_solve_method(self, worker_obj, worker_name):
         """
         Patch a worker's solve method to enable tool calls even with structured output.
@@ -279,6 +325,7 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
             return
             
         original_solve = worker_obj.solve
+        wrapper_self = self  # Capture reference to ToolIntegrationWrapper
         
         async def patched_solve(self, problem, feedback=None):
             """Enhanced solve method that handles tool calls with structured output"""
@@ -312,10 +359,13 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
                     HumanMessage(content=problem_content)
                 ]
                 
-                # First, try with tool-enabled LLM (without structured output)
-                raw_response = await worker_obj.llm.ainvoke(messages)
+                # Start conversation with initial messages
+                conversation_messages = messages.copy()
                 
-                # Check if any tools were called
+                # Step 1: Get initial response from LLM (potentially with tool calls)
+                raw_response = await worker_obj.llm.ainvoke(conversation_messages)
+                
+                # Step 2: Handle tool calls if present
                 has_tool_calls = (
                     (hasattr(raw_response, 'tool_calls') and raw_response.tool_calls) or
                     (hasattr(raw_response, 'additional_kwargs') and 
@@ -324,13 +374,61 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
                 
                 if has_tool_calls:
                     print(f"[ToolIntegration] Worker '{worker_name}' made tool calls! Processing...")
-                    # Log tool calls
+                    
+                    # Add the AI message with tool calls to conversation
+                    conversation_messages.append(raw_response)
+                    
+                    # Execute tool calls and add results to conversation
                     if hasattr(raw_response, 'tool_calls') and raw_response.tool_calls:
+                        from langchain_core.messages import ToolMessage
+                        
                         for tool_call in raw_response.tool_calls:
-                            print(f"[ToolIntegration] Tool call: {tool_call.get('name', 'unknown')}(args={tool_call.get('args', {})})")
-                
-                # Create structured response from the raw response
-                solution_content = raw_response.content if hasattr(raw_response, 'content') else str(raw_response)
+                            tool_name = tool_call.get('name', 'unknown')
+                            tool_args = tool_call.get('args', {})
+                            tool_call_id = tool_call.get('id', 'unknown_id')
+                            
+                            print(f"[ToolIntegration] Executing tool: {tool_name}(args={tool_args})")
+                            
+                            try:
+                                # Find and execute the tool using the wrapper's method
+                                tool_result = await wrapper_self._execute_tool_call(worker_obj, tool_name, tool_args)
+                                
+                                # Add tool result to conversation
+                                tool_message = ToolMessage(
+                                    content=str(tool_result),
+                                    tool_call_id=tool_call_id
+                                )
+                                conversation_messages.append(tool_message)
+                                
+                            except Exception as e:
+                                print(f"[ToolIntegration] Error executing tool {tool_name}: {e}")
+                                # Add error message to conversation
+                                error_message = ToolMessage(
+                                    content=f"Error executing {tool_name}: {str(e)}",
+                                    tool_call_id=tool_call_id
+                                )
+                                conversation_messages.append(error_message)
+                    
+                    # Step 3: Get final response from LLM after tool execution
+                    # Use a non-tool-enabled LLM or remove tools temporarily to prevent infinite loops
+                    try:
+                        # Create a temporary LLM without tools for the final response
+                        if hasattr(worker_obj.llm, 'bind_tools'):
+                            # Try to get the original LLM without tools, or use current one with explicit empty tools
+                            temp_llm = worker_obj.llm.bind_tools([])
+                            final_response = await temp_llm.ainvoke(conversation_messages)
+                        else:
+                            final_response = await worker_obj.llm.ainvoke(conversation_messages)
+                    except Exception as e:
+                        print(f"[ToolIntegration] Warning: Could not get final response without tools, using original LLM: {e}")
+                        final_response = await worker_obj.llm.ainvoke(conversation_messages)
+                    
+                    solution_content = final_response.content if hasattr(final_response, 'content') else str(final_response)
+                    raw_response = final_response  # Use final response for metadata
+                    
+                else:
+                    # No tool calls, use original response
+                    solution_content = raw_response.content if hasattr(raw_response, 'content') else str(raw_response)
                 
                 # Try to extract structured data or create default structure
                 structured_data = {
@@ -358,7 +456,6 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
                 return await original_solve(problem, feedback)
         
         # Replace the solve method
-        import types
         worker_obj.solve = types.MethodType(patched_solve, worker_obj)
         print(f"[ToolIntegration] Patched solve method for worker '{worker_name}' to enable tool usage with structured output.")
     
@@ -398,8 +495,7 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
                 
             return result
         
-        from types import MethodType
-        self.inner.run_agent = MethodType(patched_run, self.inner)
+        self.inner.run_agent = types.MethodType(patched_run, self.inner)
         
         print(f"[ToolIntegration] Successfully patched {self.inner.name} for single-agent tool selection")
 
@@ -420,4 +516,4 @@ When you believe a tool can help solve the problem, don't hesitate to use it. Th
     
     def __getattr__(self, name):
         """Delegate all other attribute access to inner agent system."""
-        return getattr(self.inner, name) 
+        return getattr(self.inner, name)

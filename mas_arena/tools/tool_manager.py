@@ -39,7 +39,6 @@ class ToolManager:
                 continue
 
             try:
-                logger.info(f"Instantiating tool provider: {name}")
                 provider_instance = tool_cls()
                 # Store the instance along with its registration name to fetch category later
                 self.tools.append({"provider": provider_instance, "name": name, "source": "local"})
@@ -59,9 +58,9 @@ class ToolManager:
                 self.tools.extend(await self.client.get_tools())
 
             except ImportError as e:
-                print(f"Error: langchain_mcp_adapters not found - {e}. MCP tools disabled.")
+                logger.error(f"Error: langchain_mcp_adapters not found - {e}. MCP tools disabled.")
             except Exception as e:
-                print(f"Error connecting to MCP servers: {e}. MCP tools disabled.")
+                logger.error(f"Error connecting to MCP servers: {e}. MCP tools disabled.")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
