@@ -4,13 +4,60 @@ import datetime
 import os
 import sys
 import time
+import atexit
 from pathlib import Path
 import asyncio
+import json
+import logging
+from typing import Dict, Any, Optional
 
 from mas_arena.benchmark_runner import BenchmarkRunner
-import logging
+from mas_arena.tools.browser_cleanup import cleanup_browser_processes
 
 logger = logging.getLogger(__name__)
+
+
+def load_mcp_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load MCP configuration from a JSON file.
+    
+    Args:
+        config_path: Path to the MCP configuration file
+        
+    Returns:
+        Dictionary containing MCP server configurations
+    """
+    if not config_path:
+        # 默认路径
+        default_paths = [
+            "mas_arena/mcp_collections/mcp.json",
+            "MASArena/mas_arena/mcp_collections/mcp.json"
+        ]
+        
+        for path in default_paths:
+            if os.path.exists(path):
+                config_path = path
+                break
+    
+    if not config_path or not os.path.exists(config_path):
+        logger.warning(f"MCP configuration file not found at {config_path}")
+        return {}
+        
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            
+        # 返回完整配置，确保包含 mcpServers 字段
+        if "mcpServers" not in config:
+            # 如果配置文件中没有 mcpServers 字段，则将整个配置作为 mcpServers
+            return {"mcpServers": config}
+        else:
+            # 如果配置文件中有 mcpServers 字段，则返回整个配置
+            return config
+            
+    except Exception as e:
+        logger.error(f"Error loading MCP configuration: {e}")
+        return {}
 
 
 def main():
@@ -58,11 +105,6 @@ def main():
     parser.add_argument(
         "--mcp-config-file", type=str, default=None,
         help="Path to MCP servers configuration JSON file"
-    )
-
-    parser.add_argument(
-        "--use-tools", action="store_true", default=None,
-        help="Enable integration of tools (default: False)"
     )
 
     parser.add_argument(
@@ -145,27 +187,19 @@ def main():
     agent_config = {}
     if args.use_mcp_tools:
         agent_config["use_mcp_tools"] = True
-        import json
+        
+        # 使用load_mcp_config函数加载MCP配置
         if not args.mcp_config_file:
-            parser.error("--use-mcp-tools requires --mcp-config-file")
-        try:
-            with open(args.mcp_config_file, "r") as f:
-                agent_config["mcp_servers"] = json.load(f)
-                
-            # Store the config file path for reference
-            agent_config["mcp_config_file"] = args.mcp_config_file
+            # 使用默认路径
+            mcp_servers = load_mcp_config()
+        else:
+            mcp_servers = load_mcp_config(args.mcp_config_file)
             
-            # Enable mock mode if "mock" appears in the config file name
-            if "mock" in args.mcp_config_file.lower():
-                agent_config["mock_mcp"] = True
-                print(f"Using mock MCP tools (config: {args.mcp_config_file})")
-                
-        except Exception as e:
-            print(f"Failed to load MCP config file: {e}", file=sys.stderr)
-            return 1
-
-    if args.use_tools:
-        agent_config["use_tools"] = True
+        # 将MCP服务器配置添加到agent_config中
+        agent_config["mcp_servers"] = mcp_servers
+        
+        # 存储配置文件路径以供参考
+        agent_config["mcp_config_file"] = args.mcp_config_file
 
     # Create directories if needed
     Path(args.results_dir).mkdir(exist_ok=True)
@@ -225,5 +259,27 @@ def main():
         return 1
 
 
+# Register browser cleanup function to run at exit
+def cleanup_at_exit():
+    print("\nPerforming final cleanup of MCP browser processes...")
+    # Use the more aggressive approach to ensure all MCP-related processes are terminated
+    from mas_arena.tools.browser_cleanup import kill_mcp_browser_processes
+    kill_mcp_browser_processes(verbose=True)
+    # Then use the regular cleanup for any remaining processes and temp directories
+    cleanup_browser_processes(verbose=True, force=True, cleanup_temp=True, mcp_only=True)
+    print("Cleanup complete.")
+
+atexit.register(cleanup_at_exit)
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user. Cleaning up...")
+        cleanup_browser_processes(verbose=True, force=True, cleanup_temp=True, mcp_only=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nProgram encountered an error: {e}")
+        print("Cleaning up MCP browser processes before exit...")
+        cleanup_browser_processes(verbose=True, force=True, cleanup_temp=True, mcp_only=True)
+        raise

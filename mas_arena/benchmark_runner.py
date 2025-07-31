@@ -18,6 +18,9 @@ from openai.types.completion_usage import CompletionUsage
 import traceback
 from rich import print as rprint
 
+# Import browser cleanup utility
+from mas_arena.tools.browser_cleanup import cleanup_browser_processes
+
 from mas_arena.metrics import (
     MetricsRegistry,
     MetricsCollector
@@ -83,7 +86,7 @@ class BenchmarkRunner:
         registry = MetricsRegistry()
         return registry
 
-    def _prepare_benchmark(self, benchmark_name, data_path, limit, agent_system, agent_config, verbose, data_id=None):
+    async def _prepare_benchmark(self, benchmark_name, data_path, limit, agent_system, agent_config, verbose, data_id=None):
         """
         Run a benchmark with the specified configuration.
 
@@ -116,7 +119,7 @@ class BenchmarkRunner:
 
         output_file = Path(self.results_dir) / f"{benchmark_name}_{agent_system}_{self.timestamp}.json"
 
-        agent = create_agent_system(agent_system, self.agent_config)
+        agent = await create_agent_system(agent_system, self.agent_config)
         if agent is None:
             raise ValueError(f"Unknown agent system: {agent_system}. Available: {', '.join(AVAILABLE_AGENT_SYSTEMS.keys())}")
 
@@ -396,7 +399,7 @@ class BenchmarkRunner:
 
     async def arun(self, benchmark_name="math", data_path=None, limit=None, agent_system="single_agent", agent_config=None, verbose=True, data_id=None, concurrency=10):
         # Prepare benchmark; we only need problems and config here
-        _, problems, benchmark_config, output_file = self._prepare_benchmark(
+        _, problems, benchmark_config, output_file = await self._prepare_benchmark(
             benchmark_name, data_path, limit, agent_system, agent_config, verbose, data_id
         )
 
@@ -408,17 +411,51 @@ class BenchmarkRunner:
         self.metrics_collector.start_timer("mas_arena.execution")
 
         semaphore = asyncio.Semaphore(concurrency)
+        
+        # a list to hold created agent instances
+        created_agents = []
 
         async def process_with_semaphore(i, p):
             async with semaphore:
                 # Create a fresh agent instance per problem to isolate state
-                new_agent = create_agent_system(agent_system, self.agent_config)
+                new_agent = await create_agent_system(agent_system, self.agent_config)
                 new_agent.set_metrics_registry(self.metrics_registry)
+                created_agents.append(new_agent)
                 return await self._process_one_problem(i, p, new_agent, benchmark_config, verbose)
 
         tasks = [process_with_semaphore(i, p) for i, p in enumerate(problems)]
         
         all_results = await tqdm.gather(*tasks, desc="Processing Problems")
+        
+        # Clean up all created agents
+        if verbose:
+            print("Cleaning up agent resources...")
+        
+        for agent in created_agents:
+            if hasattr(agent, 'teardown'):
+                try:
+                    await agent.teardown()
+                except Exception as e:
+                    print(f"Error cleaning up agent: {e}")
+        
+        if verbose:
+            print(f"Cleaned up {len(created_agents)} agent instances")
+            
+        # Clean up any MCP browser processes that might still be running
+        try:
+            if verbose:
+                print("Checking for MCP browser processes to clean up...")
+            # Use the more aggressive approach first to ensure parent processes are terminated
+            from mas_arena.tools.browser_cleanup import kill_mcp_browser_processes
+            kill_mcp_browser_processes(verbose=verbose)
+            # Then use the regular cleanup for any remaining processes and temp directories
+            killed_count = cleanup_browser_processes(verbose=verbose, force=True, cleanup_temp=True, mcp_only=True)
+            if killed_count > 0 and verbose:
+                print(f"Successfully cleaned up {killed_count} MCP browser processes")
+        except Exception as e:
+            if verbose:
+                print(f"Error cleaning up MCP browser processes: {e}")
+                traceback.print_exc()
 
         return self._finalize_benchmark(all_results, benchmark_name, agent_system, output_file, verbose)
 

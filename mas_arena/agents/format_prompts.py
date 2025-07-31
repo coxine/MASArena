@@ -18,9 +18,9 @@ class DatasetType(Enum):
     MBPP = auto()
     HUMANEVAL = auto()
     MATH = auto()
-    CODE = auto()  # Generic code generation format
+    CODE = auto()
+    GAIA = auto()
     HOTPOTQA = auto()  # Multi-hop question answering
-    GAIA = auto()  # Placeholder for GAIA benchmark
 
 
 @dataclass
@@ -156,31 +156,6 @@ Begin now. Remember: output only the compliant answer.
 """,
         description="Format prompt for math problems",
         dataset_type=DatasetType.MATH
-    ),
-    
-    "hotpotqa": FormatPrompt(
-        name="HOTPOTQA",
-        prompt="""
-- This is a multi-hop question answering task that requires reasoning across multiple documents.
-- Read through all provided context documents carefully to find relevant information.
-- The answer should be a specific entity, name, or short phrase (usually 1-5 words).
-- Provide your reasoning process to show how you connected information across documents.
-- Give your final answer in the format: <answer>your answer here</answer>
-- Ensure your answer is:
-  * Factually accurate and supported by the context
-  * Precisely answering what is asked (e.g., if asked for a year, give a year; if asked for a name, give a name)
-  * Concise and specific (avoid unnecessary words or explanations in the answer tags)
-  * Properly capitalized and formatted
-
-Example format:
-Based on the context, I need to find... [your reasoning]
-From document X, I can see that... [connection 1]
-From document Y, I can see that... [connection 2]
-Therefore, connecting these pieces of information...
-<answer>specific answer</answer>
-""",
-        description="Format prompt for HotpotQA multi-hop question answering",
-        dataset_type=DatasetType.HOTPOTQA
     ),
     "gaia": FormatPrompt(
         name="gaia",

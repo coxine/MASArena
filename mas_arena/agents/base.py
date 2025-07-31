@@ -6,7 +6,7 @@ This module provides the base classes and interfaces for agent systems.
 
 import abc
 import logging
-from typing import Dict, Any, Optional, Type, Callable
+from typing import Dict, Any, Optional, Type, Callable, List, Tuple
 import uuid
 import os
 import json
@@ -34,16 +34,18 @@ class AgentSystem(abc.ABC):
         - Have an `llm` attribute if it's intended to use tools bound to an LLM.
     """
 
-    def __init__(self, name: str = None, config: Dict[str, Any] = None):
+    def __init__(self, name: str = None, config: Dict[str, Any] = None, mcp_config: Dict[str, Any] = None):
         """
         Initialize the agent system.
 
         Args:
             name: Name of the agent system
             config: Configuration parameters for the agent system
+            mcp_config: Configuration for MCP tools
         """
         self.name = name or self.__class__.__name__
         self.config = config or {}
+        self.mcp_config = mcp_config or {}
         self.evaluator_name = self.config.get("evaluator", None)
         if self.evaluator_name is None:
             logger.info("Evaluator name is not set in the configuration. Defaulting to None.")
@@ -64,8 +66,11 @@ class AgentSystem(abc.ABC):
         self.visualizations_dir.mkdir(parents=True, exist_ok=True)
 
         self.format_prompt = self.format_prompt()
-        # ToolManager is now initialized by the ToolIntegrationWrapper, not the base agent
+
         self.tool_manager = None
+
+        self.max_steps = self.config.get("max_steps", 100)
+        self.tools = []
 
     def format_prompt(self) -> str:
         """
@@ -660,6 +665,119 @@ class AgentSystem(abc.ABC):
             "evaluator": self.evaluator.name if self.evaluator else None
         }
 
+    def prepare_llm_input(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Prepare input for LLM API call, including messages and tools.
+
+        Args:
+            messages: List of message dictionaries
+            tools: Optional list of tool dictionaries
+
+        Returns:
+            Dictionary with LLM input parameters
+        """
+        llm_input = {"messages": messages}
+
+        if tools and len(tools) > 0:
+            # OpenAI tools format
+            openai_tools = []
+            for tool in tools:
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("function_name", tool.get("name", "unknown_tool")),
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("parameters", {"type": "object", "properties": {}})
+                    }
+                })
+
+            llm_input["tools"] = openai_tools
+            # Add tool choice instruction
+            llm_input["tool_choice"] = "auto"
+        return llm_input
+
+    def extract_tool_calls(self, response: Any) -> Tuple[bool, List[Dict[str, Any]]]:
+        """
+        Extract tool calls from an LLM response.
+
+        Args:
+            response: The LLM response object
+
+        Returns:
+            Tuple of (has_tool_call, tool_calls)
+        """
+        has_tool_call = False
+        tool_calls = []
+
+        if hasattr(response, "choices") and len(response.choices) > 0:
+            message = response.choices[0].message
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                has_tool_call = True
+                for tool_call in message.tool_calls:
+                    tool_calls.append({
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                        "id": tool_call.id
+                    })
+
+        elif isinstance(response, dict):
+            if "tool_calls" in response:
+                has_tool_call = True
+                for tool_call in response["tool_calls"]:
+                    tool_calls.append({
+                        "name": tool_call.get("name", ""),
+                        "arguments": tool_call.get("arguments", "{}"),
+                        "id": tool_call.get("id", "")
+                    })
+
+        return has_tool_call, tool_calls
+
+    async def execute_tool(self, tool_name: str, tool_args: str) -> Dict[str, Any]:
+        """
+        Execute a tool call
+
+        Args:
+            tool_name: Tool name
+            tool_args: Tool arguments (JSON string)
+
+        Returns:
+            Tool execution result
+        """
+        if not hasattr(self, "tool_manager") or not self.tool_manager:
+            return {"error": "No tool manager available"}
+
+        server_name = None
+        function_name = None
+
+        for tool in self.tools:
+            if tool.get("name") == tool_name:
+                server_name = tool.get("server_name")
+                function_name = tool.get("function_name")
+                break
+
+        try:
+            # Parse arguments
+            args_dict = json.loads(tool_args) if isinstance(tool_args, str) else tool_args
+
+            # Execute tool using tool_manager
+            result = await self.tool_manager.call_tool(server_name, function_name or tool_name, args_dict)
+            return {"result": result}
+
+        except Exception as e:
+            logger.error(f"Tool execution failed: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"error": f"Tool execution failed: {str(e)}"}
+
+    async def teardown(self):
+        """Clean up resources used by the agent system.
+
+        This method should be overridden by subclasses that need to perform
+        cleanup operations, such as closing connections or releasing resources.
+        """
+        # Base implementation does nothing
+        pass
+
 
 
 class AgentSystemRegistry:
@@ -686,15 +804,14 @@ class AgentSystemRegistry:
         }
 
     @classmethod
-    def get(cls, name: str, config: Dict[str, Any] = None) -> Optional[AgentSystem]:
+    def get(cls, name: str, config: Dict[str, Any] = None, mcp_config: Dict[str, Any] = None) -> Optional[AgentSystem]:
         """Get an instance of an agent system by name."""
         cls._import_agent_systems()
         if name not in cls._registry:
             raise KeyError(f"Agent system '{name}' not found. Available: {', '.join(cls.get_available_system_names())}")
-        
         agent_info = cls._registry[name]
         agent_config = {**agent_info["default_config"], **(config or {})}
-        return agent_info["class"](name=name, config=agent_config)
+        return agent_info["class"](name=name, config=agent_config, mcp_config=mcp_config)
 
     @classmethod
     def list_available(cls) -> Dict[str, Any]:
@@ -716,7 +833,7 @@ class AgentSystemRegistry:
         return cls._registry
 
 
-def create_agent_system(name: str, config: Dict[str, Any] = None) -> Optional[AgentSystem]:
+async def create_agent_system(name: str, config: Dict[str, Any] = None) -> Optional[AgentSystem]:
     """
     Create an agent system by name.
     If 'use_tools' or 'use_mcp_tools' is in the config, the agent system
@@ -725,24 +842,24 @@ def create_agent_system(name: str, config: Dict[str, Any] = None) -> Optional[Ag
     AgentSystemRegistry._import_agent_systems()
     config = config or {}
 
+    mcp_servers = config.get("mcp_servers", {})
+
     # Get an instance of the agent system from the registry
     try:
-        agent_system = AgentSystemRegistry.get(name, config=config)
+        agent_system = AgentSystemRegistry.get(name, config=config, mcp_config=mcp_servers)
     except KeyError:
         return None
 
     if not agent_system:
         return None
     # Check if any tool integration should be applied
-    if config and (config.get("use_tools") or config.get("use_mcp_tools")):
+    if config and  config.get("use_mcp_tools"):
         try:
             from mas_arena.tools.tool_integration import ToolIntegrationWrapper
-            mcp_servers = config.get("mcp_servers", {})
-            mock_mode = config.get("mock_mcp", False)
 
             # Wrap the agent system
             # The wrapper will now be responsible for initializing the ToolManager
-            agent_system = ToolIntegrationWrapper(agent_system, mcp_servers, mock=mock_mode)
+            agent_system = ToolIntegrationWrapper(agent_system, config)
 
         except ImportError as e:
             import traceback
@@ -750,6 +867,9 @@ def create_agent_system(name: str, config: Dict[str, Any] = None) -> Optional[Ag
             print("Underlying ImportError:")
             traceback.print_exc()
 
+    # Initialize the agent system by calling setup()
+    if hasattr(agent_system, 'setup'):
+        await agent_system.setup()
 
     return agent_system
 
