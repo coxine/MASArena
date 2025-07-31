@@ -30,7 +30,7 @@ def add_files_to_prompt(
     problem: Dict[str, Any], file_name: str = None
 ):
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    relative_path = os.path.join(script_dir, '..', '..', '..', '..', 'data', 'files', file_name)
+    relative_path = os.path.join(script_dir, '..', '..', '..',  'data', 'files',"gaia","validate", file_name)
     file_path = Path(os.path.normpath(relative_path))
     if file_path.suffix in [".pdf", ".docx", ".doc", ".txt"]:
         problem["problem"] += f" Here are the necessary document files: {file_path}"

@@ -1,5 +1,7 @@
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+
+from mas_arena.agents.single_agent import SingleAgent
 from mas_arena.tools.tool_selector import ToolSelector
 from mas_arena.tools.tool_manager import ToolManager
 from mas_arena.agents.base import AgentSystem
@@ -10,61 +12,94 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(name)s] - %(message)s')
 
 class ToolIntegrationWrapper(AgentSystem):
-    """
-    Wraps any AgentSystem to inject MCP-tool integration.
-    Delegates all calls to `inner`, but intercepts:
-      - Multi-agent systems: after they generate sub-agents, assign tools.
-      - Single-agent systems: before run_agent, select top-k tools.
-    """
-    def __init__(self, inner: AgentSystem, mcp_servers: Dict[str, Any], mock: bool = False):
-        """
-        Initialize by wrapping an existing agent system.
-        
-        Args:
-            inner: The agent system being wrapped
-            mcp_servers: Dict mapping service names to server configs
-            mock: Whether to run in mock mode (no actual MCP server calls)
-        """
-        # We delegate to inner instead of calling super().__init__
+    """Wraps agent systems to inject MCP tool integration."""
+
+    def __init__(self, inner: AgentSystem, config: Dict[str, Any] = None):
+        """Initialize with an inner agent system and configuration."""
+        config = config or {}
+        super().__init__(name=f"{inner.name}_with_tools", config=config)
         self.inner = inner
-        # Copy name and config from inner
-        self.name = inner.name
-        self.config = inner.config.copy()
-
-        # Initialize the ToolManager with all necessary configs
-        self.tool_manager = ToolManager(
-            mcp_servers=mcp_servers,
-            mock_mode=mock,
-            use_local_tools=self.config.get("use_tools", False),
-            use_mcp_tools=self.config.get("use_mcp_tools", False),
-            tool_assignment_rules=self.config.get("tool_assignment_rules", None)
-        )
-        # Assign the created manager to the inner agent for reference
-        self.inner.tool_manager = self.tool_manager
-            
-        # Build the selector once
-        self.selector = ToolSelector(self.tool_manager.get_tools())
         
-        # Apply patches based on the type of agent system
-        self._apply_patches()
+        # Extract MCP servers from config
+        self.mcp_servers = config.get("mcp_servers", {})
+        
+        self.tool_manager = None
+        self.tool_selector = None
 
-    def select_tools_for_problem(self, problem: Any, num_agents: Optional[int] = None) -> Any:
-        """
-        Select or partition tools for a given problem. This method can be overridden for custom selection algorithms.
-        For multi-agent, num_agents should be provided.
-        """
-        if num_agents is not None and num_agents > 1:
-            # Multi-agent: partition tools
-            problem_desc = problem.get("problem", "") if isinstance(problem, dict) else str(problem)
-            return self.selector.select_tools(
-                problem_desc,
-                num_agents=num_agents,
-                overlap=False,
+        # self._patch_agent_system()
+
+    # def _patch_agent_system(self):
+    #     """Patch the inner agent system to use tools."""
+    #     if isinstance(self.inner, SingleAgent):
+    #         self._patch_single_agent_system()
+    #     else:
+    #         logger.warning(f"Tool integration not supported for {self.inner.__class__.__name__}")
+
+    # def _patch_single_agent_system(self):
+    #     """Patch a SingleAgent system to use tools."""
+    #     orig_run = self.inner.run_agent
+    #     wrapper_self = self
+    #
+    #     async def patched_run(wrapped_self, problem, **kwargs):
+    #         tools = wrapper_self.select_tools_for_problem(problem)
+    #         tool_objs = [t["tool_object"] for t in tools if "tool_object" in t]
+    #         setattr(wrapper_self.inner, "tools", tools)
+    #         wrapped_self.tools = tools
+    #
+    #         # Set up tool_manager on the wrapped agent
+    #         if not hasattr(wrapped_self, "tool_manager") or wrapped_self.tool_manager is None:
+    #             wrapped_self.tool_manager = wrapper_self.tool_manager
+    #
+    #         return await orig_run(problem, **kwargs)
+    #
+    #     from types import MethodType
+    #     self.inner.run_agent = MethodType(patched_run, self.inner)
+
+    async def setup(self):
+        """Set up the tool integration."""
+        #await self.inner.setup()
+        
+        # Check if MCP tools should be used
+        use_mcp_tools = self.config.get("use_mcp_tools", False)
+        
+        if use_mcp_tools and self.mcp_servers:
+            # Initialize tool manager
+            self.tool_manager = ToolManager(
+                mcp_servers=self.mcp_servers,
+                use_mcp_tools=True
             )
+            
+            # Enter the context manager to initialize tools
+            self.tool_manager = await self.tool_manager.__aenter__()
+            
+            # Get tool descriptions
+            tool_descriptions = self.tool_manager.get_tools()
+            logger.info(f"Got {len(tool_descriptions)} tool descriptions")
+            
+            # Log the first tool description as an example
+            if tool_descriptions:
+                logger.info(f"Example tool description: {tool_descriptions[0]}")
+            else:
+                logger.warning("No tool descriptions available")
+            
+            # Set tools directly on the inner agent
+            if hasattr(self.inner, 'tools'):
+                self.inner.tools = tool_descriptions
+            
+            # Also set tool_manager on the inner agent if it has the attribute
+            if hasattr(self.inner, 'tool_manager'):
+                self.inner.tool_manager = self.tool_manager
         else:
-            # Single-agent: select top tools
-            problem_desc = problem.get("problem", "") if isinstance(problem, dict) else str(problem)
-            return self.selector.select_tools(problem_desc)
+            #todo use local tools if no MCP servers are configured
+            pass
+
+    def select_tools_for_problem(self, problem: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Select tools for a problem."""
+        if self.tool_selector is None:
+            logger.warning("Tool selector not initialized")
+            return []
+            
+        return self.tool_selector.select_tools(problem)
     
     def run_agent(self, problem: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Delegate to inner agent's run_agent method and log tool calls if present."""
@@ -202,6 +237,8 @@ class ToolIntegrationWrapper(AgentSystem):
             tool_objs = [t["tool_object"] for t in tools if "tool_object" in t]
             # Assign tools to agent for logging/metadata
             setattr(wrapper_self.inner, "tools", tools)
+            # 确保代理系统直接可以访问工具列表
+            wrapped_self.tools = tools
             # If the agent has an LLM, bind the tools
             if not hasattr(wrapper_self.inner, "llm"):
                 if tool_objs: # Only warn if tools were selected
@@ -236,4 +273,20 @@ class ToolIntegrationWrapper(AgentSystem):
     
     def __getattr__(self, name):
         """Delegate all other attribute access to inner agent system."""
-        return getattr(self.inner, name) 
+        return getattr(self.inner, name)
+        
+    async def teardown(self):
+        """Clean up resources by properly exiting the tool manager context.
+        
+        This method should be called when the agent system is no longer needed
+        to ensure proper cleanup of tool manager resources.
+        """
+        if self.tool_manager:
+            try:
+                logger.info("Cleaning up tool manager resources")
+                await self.tool_manager.__aexit__(None, None, None)
+                logger.info("Tool manager resources cleaned up successfully")
+            except Exception as e:
+                logger.error(f"Error cleaning up tool manager: {e}")
+                import traceback
+                logger.error(traceback.format_exc()) 
